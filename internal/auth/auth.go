@@ -23,6 +23,7 @@ type BrowserAuth struct {
 	chromeCmd       *exec.Cmd
 	cancel          context.CancelFunc
 	useExec         bool
+	accountEmail    string
 	keepOpenSeconds int // Keep browser open for N seconds after auth
 }
 
@@ -33,11 +34,16 @@ func New(debug bool) *BrowserAuth {
 	}
 }
 
+func (ba *BrowserAuth) AccountEmail() string {
+	return ba.accountEmail
+}
+
 type Options struct {
 	ProfileName       string
 	TryAllProfiles    bool
 	ScanBeforeAuth    bool
 	TargetURL         string
+	AuthUser          string
 	PreferredBrowsers []string
 	CheckNotebooks    bool
 	KeepOpenSeconds   int // Keep browser open for N seconds after auth
@@ -45,10 +51,11 @@ type Options struct {
 
 type Option func(*Options)
 
-func WithProfileName(p string) Option { return func(o *Options) { o.ProfileName = p } }
-func WithTryAllProfiles() Option      { return func(o *Options) { o.TryAllProfiles = true } }
-func WithScanBeforeAuth() Option      { return func(o *Options) { o.ScanBeforeAuth = true } }
-func WithTargetURL(url string) Option { return func(o *Options) { o.TargetURL = url } }
+func WithProfileName(p string) Option     { return func(o *Options) { o.ProfileName = p } }
+func WithTryAllProfiles() Option          { return func(o *Options) { o.TryAllProfiles = true } }
+func WithScanBeforeAuth() Option          { return func(o *Options) { o.ScanBeforeAuth = true } }
+func WithTargetURL(url string) Option     { return func(o *Options) { o.TargetURL = url } }
+func WithAuthUser(authUser string) Option { return func(o *Options) { o.AuthUser = authUser } }
 func WithPreferredBrowsers(browsers []string) Option {
 	return func(o *Options) { o.PreferredBrowsers = browsers }
 }
@@ -357,7 +364,7 @@ func checkProfileForDomainCookies(cookiesPath, targetDomain string) bool {
 }
 
 // countNotebooks makes a request to list the user's notebooks and counts them
-func countNotebooks(token, cookies string) (int, error) {
+func countNotebooks(token, cookies, authUser string) (int, error) {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -369,9 +376,12 @@ func countNotebooks(token, cookies string) (int, error) {
 	}
 
 	// Add headers
+	if authUser == "" {
+		authUser = "0"
+	}
 	req.Header.Add("Cookie", cookies)
 	req.Header.Add("x-goog-api-key", "AIzaSyDRYGVeXVJ5EQwWNjBORFQdrgzjbGsEYg0")
-	req.Header.Add("x-goog-authuser", "0")
+	req.Header.Add("x-goog-authuser", authUser)
 	req.Header.Add("Authorization", "Bearer "+token)
 	req.Header.Add("Content-Type", "application/json")
 	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36")
@@ -407,6 +417,7 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 		TryAllProfiles:    false,
 		ScanBeforeAuth:    true, // Default to showing profile information
 		TargetURL:         "https://notebooklm.google.com",
+		AuthUser:          os.Getenv("NLM_AUTHUSER"),
 		PreferredBrowsers: []string{},
 		CheckNotebooks:    false,
 		KeepOpenSeconds:   0,
@@ -417,6 +428,21 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 
 	// Store keep-open setting in the struct
 	ba.keepOpenSeconds = o.KeepOpenSeconds
+
+	// Normalize target URL to include trailing slash for root and append authuser when provided
+	if o.TargetURL == "" {
+		o.TargetURL = "https://notebooklm.google.com/"
+	} else if o.TargetURL == "https://notebooklm.google.com" {
+		o.TargetURL = "https://notebooklm.google.com/"
+	}
+
+	if o.AuthUser != "" && !strings.Contains(o.TargetURL, "authuser=") {
+		separator := "?"
+		if strings.Contains(o.TargetURL, "?") {
+			separator = "&"
+		}
+		o.TargetURL = o.TargetURL + separator + "authuser=" + o.AuthUser
+	}
 
 	defer ba.cleanup()
 
@@ -526,7 +552,7 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 					profile.AuthCookies = cookies
 
 					// Try to get notebooks
-					notebookCount, err := countNotebooks(token, cookies)
+					notebookCount, err := countNotebooks(token, cookies, o.AuthUser)
 					if err != nil {
 						fmt.Println(" Error counting notebooks")
 						updatedProfiles = append(updatedProfiles, profile)
@@ -660,7 +686,7 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 		}))
 	}
 
-	return ba.extractAuthData(ctx)
+	return ba.extractAuthDataForURL(ctx, o.TargetURL)
 }
 
 // copyProfileData first resolves the profile name to a path and then calls copyProfileDataFromPath
@@ -716,13 +742,13 @@ func (ba *BrowserAuth) copyProfileDataFromPath(sourceDir string) error {
 
 	// Copy only essential files for authentication (not entire profile)
 	essentialFiles := []string{
-		"Cookies",           // Authentication cookies
-		"Cookies-journal",   // Cookie database journal
-		"Login Data",        // Saved login information
+		"Cookies",            // Authentication cookies
+		"Cookies-journal",    // Cookie database journal
+		"Login Data",         // Saved login information
 		"Login Data-journal", // Login database journal
-		"Web Data",          // Form data and autofill
-		"Web Data-journal",  // Web data journal
-		"Preferences",       // Browser preferences
+		"Web Data",           // Form data and autofill
+		"Web Data-journal",   // Web data journal
+		"Preferences",        // Browser preferences
 		"Secure Preferences", // Secure browser settings
 	}
 
@@ -989,6 +1015,8 @@ func (ba *BrowserAuth) extractAuthData(ctx context.Context) (token, cookies stri
 }
 
 func (ba *BrowserAuth) extractAuthDataForURL(ctx context.Context, targetURL string) (token, cookies string, err error) {
+	ba.accountEmail = ""
+
 	// Navigate and wait for initial page load
 	if err := chromedp.Run(ctx,
 		chromedp.Navigate(targetURL),
@@ -1135,6 +1163,24 @@ func (ba *BrowserAuth) extractAuthDataForURL(ctx context.Context, targetURL stri
 	}
 }
 
+func extractAccountEmail(accountLabel string) string {
+	if accountLabel == "" {
+		return ""
+	}
+
+	if idx := strings.Index(accountLabel, "("); idx != -1 {
+		if end := strings.Index(accountLabel[idx+1:], ")"); end != -1 {
+			return strings.TrimSpace(accountLabel[idx+1 : idx+1+end])
+		}
+	}
+
+	if idx := strings.Index(accountLabel, ":"); idx != -1 {
+		return strings.TrimSpace(accountLabel[idx+1:])
+	}
+
+	return strings.TrimSpace(accountLabel)
+}
+
 func (ba *BrowserAuth) tryExtractAuth(ctx context.Context) (token, cookies string, err error) {
 	var hasAuth bool
 	err = chromedp.Run(ctx,
@@ -1151,8 +1197,8 @@ func (ba *BrowserAuth) tryExtractAuth(ctx context.Context) (token, cookies strin
 	// Check if we're on a signin page - this means we're not actually authenticated
 	var isSigninPage bool
 	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`document.querySelector("form[action^='/signin']") !== null || 
-                           document.querySelector("form[action^='/ServiceLogin']") !== null || 
+		chromedp.Evaluate(`document.querySelector("form[action^='/signin']") !== null ||
+                           document.querySelector("form[action^='/ServiceLogin']") !== null ||
                            document.querySelector("input[type='email']") !== null ||
                            window.location.href.includes("accounts.google.com")`, &isSigninPage),
 	)
@@ -1182,7 +1228,7 @@ func (ba *BrowserAuth) tryExtractAuth(ctx context.Context) (token, cookies strin
 	// Check for token presence and validity
 	var tokenExists bool
 	err = chromedp.Run(ctx,
-		chromedp.Evaluate(`typeof WIZ_global_data.SNlM0e === 'string' && 
+		chromedp.Evaluate(`typeof WIZ_global_data.SNlM0e === 'string' &&
                           WIZ_global_data.SNlM0e.length > 10`, &tokenExists),
 	)
 	if err != nil {
@@ -1193,10 +1239,12 @@ func (ba *BrowserAuth) tryExtractAuth(ctx context.Context) (token, cookies strin
 		return "", "", fmt.Errorf("token not found or invalid")
 	}
 
+	var accountLabel string
 	err = chromedp.Run(ctx,
 		chromedp.Evaluate(`WIZ_global_data.SNlM0e`, &token),
+		chromedp.Evaluate(`(() => { const el = document.querySelector('a[aria-label*="Google Account"]'); return el ? el.getAttribute('aria-label') : ""; })()`, &accountLabel),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			cks, err := network.GetCookies().WithUrls([]string{"https://notebooklm.google.com"}).Do(ctx)
+			cks, err := network.GetCookies().WithURLs([]string{"https://notebooklm.google.com"}).Do(ctx)
 			if err != nil {
 				return fmt.Errorf("get cookies: %w", err)
 			}
@@ -1211,6 +1259,15 @@ func (ba *BrowserAuth) tryExtractAuth(ctx context.Context) (token, cookies strin
 	)
 	if err != nil {
 		return "", "", fmt.Errorf("extract auth data: %w", err)
+	}
+	if accountLabel != "" {
+		ba.accountEmail = extractAccountEmail(accountLabel)
+		if ba.accountEmail != "" {
+			_ = os.Setenv("NLM_AUTH_EMAIL", ba.accountEmail)
+		}
+	}
+	if ba.debug && accountLabel != "" {
+		fmt.Printf("Authenticated as: %s\n", accountLabel)
 	}
 
 	// Validate token format - should be a non-trivial string

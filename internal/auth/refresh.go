@@ -82,6 +82,10 @@ func (r *RefreshClient) RefreshCredentials(gsessionID string) error {
 	}
 
 	// Set headers
+	authUser := os.Getenv("NLM_AUTHUSER")
+	if authUser == "" {
+		authUser = "0"
+	}
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Authorization", fmt.Sprintf("SAPISIDHASH %d_%s", timestamp, authHash))
@@ -89,7 +93,7 @@ func (r *RefreshClient) RefreshCredentials(gsessionID string) error {
 	req.Header.Set("Cookie", r.cookies)
 	req.Header.Set("Origin", "https://notebooklm.google.com")
 	req.Header.Set("Referer", "https://notebooklm.google.com/")
-	req.Header.Set("X-Goog-AuthUser", "0")
+	req.Header.Set("X-Goog-AuthUser", authUser)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
 
 	if r.debug {

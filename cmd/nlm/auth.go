@@ -33,6 +33,7 @@ type AuthOptions struct {
 	TryAllProfiles  bool
 	ProfileName     string
 	TargetURL       string
+	AuthUser        string
 	CheckNotebooks  bool
 	Debug           bool
 	Help            bool
@@ -47,12 +48,15 @@ func parseAuthFlags(args []string) (*AuthOptions, []string, error) {
 	opts := &AuthOptions{
 		ProfileName: chromeProfile,
 		TargetURL:   "https://notebooklm.google.com",
+		AuthUser:    os.Getenv("NLM_AUTHUSER"),
 	}
 
 	authFlags.BoolVar(&opts.TryAllProfiles, "all", false, "Try all available browser profiles")
 	authFlags.BoolVar(&opts.TryAllProfiles, "a", false, "Try all available browser profiles (shorthand)")
 	authFlags.StringVar(&opts.ProfileName, "profile", opts.ProfileName, "Specific Chrome profile to use")
 	authFlags.StringVar(&opts.ProfileName, "p", opts.ProfileName, "Specific Chrome profile to use (shorthand)")
+	authFlags.StringVar(&opts.AuthUser, "authuser", opts.AuthUser, "Google account index to use (e.g., 0, 1)")
+	authFlags.StringVar(&opts.AuthUser, "au", opts.AuthUser, "Google account index to use (shorthand)")
 	authFlags.StringVar(&opts.TargetURL, "url", opts.TargetURL, "Target URL to authenticate against")
 	authFlags.StringVar(&opts.TargetURL, "u", opts.TargetURL, "Target URL to authenticate against (shorthand)")
 	authFlags.BoolVar(&opts.CheckNotebooks, "notebooks", false, "Check notebook count for profiles")
@@ -73,6 +77,7 @@ func parseAuthFlags(args []string) (*AuthOptions, []string, error) {
 		authFlags.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExample: nlm auth login -all -notebooks\n")
 		fmt.Fprintf(os.Stderr, "Example: nlm auth login -profile Work\n")
+		fmt.Fprintf(os.Stderr, "Example: nlm auth login -authuser 1\n")
 		fmt.Fprintf(os.Stderr, "Example: nlm auth login -keep-open 10\n")
 		fmt.Fprintf(os.Stderr, "Example: nlm auth -all\n")
 	}
@@ -112,6 +117,10 @@ func parseAuthFlags(args []string) (*AuthOptions, []string, error) {
 		if v := os.Getenv("NLM_BROWSER_PROFILE"); v != "" {
 			opts.ProfileName = v
 		}
+	}
+
+	if opts.AuthUser == "" {
+		opts.AuthUser = "0"
 	}
 
 	return opts, remainingArgs, nil
@@ -203,7 +212,14 @@ func handleAuth(args []string, debug bool) (string, string, error) {
 
 	// Prepare options for auth call
 	// Custom options
-	authOpts := []auth.Option{auth.WithScanBeforeAuth(), auth.WithTargetURL(opts.TargetURL)}
+	if opts.AuthUser != "" {
+		_ = os.Setenv("NLM_AUTHUSER", opts.AuthUser)
+	}
+	authOpts := []auth.Option{
+		auth.WithScanBeforeAuth(),
+		auth.WithTargetURL(opts.TargetURL),
+		auth.WithAuthUser(opts.AuthUser),
+	}
 
 	// Add more verbose output for login command
 	if isLoginCommand && useDebug {
@@ -230,7 +246,8 @@ func handleAuth(args []string, debug bool) (string, string, error) {
 		return "", "", fmt.Errorf("browser auth failed: %w", err)
 	}
 
-	return persistAuthToDisk(cookies, token, opts.ProfileName)
+	email := a.AccountEmail()
+	return persistAuthToDisk(cookies, token, opts.ProfileName, opts.AuthUser, email)
 }
 
 func detectAuthInfo(cmd string) (string, string, error) {
@@ -249,11 +266,11 @@ func detectAuthInfo(cmd string) (string, string, error) {
 		return "", "", fmt.Errorf("no auth token found")
 	}
 	authToken := atMatch[1]
-	persistAuthToDisk(cookies, authToken, "")
+	persistAuthToDisk(cookies, authToken, "", "", "")
 	return authToken, cookies, nil
 }
 
-func persistAuthToDisk(cookies, authToken, profileName string) (string, string, error) {
+func persistAuthToDisk(cookies, authToken, profileName, authUser, authEmail string) (string, string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", "", fmt.Errorf("get home dir: %w", err)
@@ -267,10 +284,12 @@ func persistAuthToDisk(cookies, authToken, profileName string) (string, string, 
 
 	// Create or update env file
 	envFile := filepath.Join(nlmDir, "env")
-	content := fmt.Sprintf("NLM_COOKIES=%q\nNLM_AUTH_TOKEN=%q\nNLM_BROWSER_PROFILE=%q\n",
+	content := fmt.Sprintf("NLM_COOKIES=%q\nNLM_AUTH_TOKEN=%q\nNLM_BROWSER_PROFILE=%q\nNLM_AUTHUSER=%q\nNLM_AUTH_EMAIL=%q\n",
 		cookies,
 		authToken,
 		profileName,
+		authUser,
+		authEmail,
 	)
 
 	if err := os.WriteFile(envFile, []byte(content), 0600); err != nil {

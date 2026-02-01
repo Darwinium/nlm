@@ -1497,12 +1497,16 @@ func (c *Client) DownloadVideoWithAuth(videoURL, filename string) error {
 	// Get auth token and add as query parameter if needed
 	authToken := os.Getenv("NLM_AUTH_TOKEN")
 	if authToken != "" && !strings.Contains(videoURL, "authuser=") {
-		// Add authuser=0 parameter if not present
+		// Add authuser parameter if not present
+		authUser := os.Getenv("NLM_AUTHUSER")
+		if authUser == "" {
+			authUser = "0"
+		}
 		separator := "?"
 		if strings.Contains(videoURL, "?") {
 			separator = "&"
 		}
-		req.URL, _ = url.Parse(videoURL + separator + "authuser=0")
+		req.URL, _ = url.Parse(videoURL + separator + "authuser=" + authUser)
 	}
 
 	if c.config.Debug {
