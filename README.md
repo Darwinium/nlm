@@ -163,6 +163,10 @@ nlm auth --all
 # Use a specific browser profile
 nlm auth --profile "Work Profile"
 
+# Use a specific Google account index (multi-account in the same Profile)
+nlm auth --authuser 1
+nlm auth -au 1
+
 # Check notebook access for profiles
 nlm auth --notebooks
 
